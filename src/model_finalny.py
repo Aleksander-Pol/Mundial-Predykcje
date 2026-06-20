@@ -4,8 +4,9 @@ from scipy.stats import poisson
 from scipy.optimize import minimize_scalar
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent.parent
-PRZEWAGA_GOSPODARZA = 100
+BASE = Path(__file__).resolve().parent.parent  #to pobiera ścieżkę do tego pliku w którym jestem tj. model finalny
+
+PRZEWAGA_GOSPODARZA = 100 #zmienna arbitralna jak bardzo lepiej idzie gospodarzom jak grają u siebie
 
 def waga_turnieju(t):
     if t == "FIFA World Cup": return 60
@@ -22,39 +23,48 @@ def indeks_goli(r):
 
 # wczytanie danych
 df = pd.read_csv(BASE / "data" / "results.csv")
-df["date"] = pd.to_datetime(df["date"])
-df = df.dropna(subset=["home_score", "away_score"]).sort_values("date")
+df["date"] = pd.to_datetime(df["date"]) # zamieniamy kolumnę z datą z tekstowej na format daty dostarczany przez pandas do porównywania itd
+df = df.dropna(subset=["home_score", "away_score"]).sort_values("date") # zachowujemy tylko te mecze które nie mają wyniku jako null
 
 # przejście Elo: ratingi + dane treningowe (per mecz)
 RATINGI = {}
-diffs, gd, ga = [], [], []
+diffs, gole_home, gole_away = [], [], []
 for _, row in df.iterrows():
     gosp, gosc = row["home_team"], row["away_team"]
-    Rg, Rs = RATINGI.get(gosp, 1500), RATINGI.get(gosc, 1500)
+    rating_gosp, rating_gosc = RATINGI.get(gosp, 1500), RATINGI.get(gosc, 1500)
     bonus = 0 if row["neutral"] else PRZEWAGA_GOSPODARZA
-    diff = (Rg + bonus) - Rs
-    diffs.append(diff); gd.append(row["home_score"]); ga.append(row["away_score"])
-    Ea = 1 / (1 + 10 ** (-diff / 400))
-    Sa = 1 if row["home_score"] > row["away_score"] else (0.5 if row["home_score"] == row["away_score"] else 0)
-    zmiana = waga_turnieju(row["tournament"]) * indeks_goli(row["home_score"] - row["away_score"]) * (Sa - Ea)
-    RATINGI[gosp] = Rg + zmiana
-    RATINGI[gosc] = Rs - zmiana
+    diff = (rating_gosp + bonus) - rating_gosc  #mierzymy różnice ELO pomiędzy gospodarzem a gościem z uwzględnieniem bonusu gospodarza
+    diffs.append(diff)
+    gole_home.append(row["home_score"])
+    gole_away.append(row["away_score"])
 
-diffs = np.array(diffs); gd = np.array(gd).astype(int); ga = np.array(ga).astype(int)
+    expected_score_a = 1 / (1 + 10 ** (-diff / 400))
+    actual_score_a = 1 if row["home_score"] > row["away_score"] else (0.5 if row["home_score"] == row["away_score"] else 0)
+
+    zmiana = waga_turnieju(row["tournament"]) * indeks_goli(row["home_score"] - row["away_score"]) * (actual_score_a - expected_score_a)
+    """
+    Tutaj podobnie do perceptronu to wygląda że stała uczenia to u nas waga_turnieju*indeks_goli
+    """
+    RATINGI[gosp] = rating_gosp + zmiana
+    RATINGI[gosc] = rating_gosc - zmiana
+
+diffs = np.array(diffs)
+gole_home = np.array(gole_home).astype(int)
+gole_away = np.array(gole_away).astype(int)
 
 # mostek Elo -> gole
-B, A = np.polyfit(np.concatenate([diffs, -diffs]), np.concatenate([gd, ga]), 1)
+B, A = np.polyfit(np.concatenate([diffs, -diffs]), np.concatenate([gole_home, gole_away]), 1)
 
 # dopasowanie rho (Dixon-Coles)
 lam = np.maximum(A + B * diffs, 0.05)
 mu  = np.maximum(A - B * diffs, 0.05)
-base = poisson.pmf(gd, lam) * poisson.pmf(ga, mu)
+base = poisson.pmf(gole_home, lam) * poisson.pmf(gole_away, mu)
 def _neg_ll(rho):
     t = np.ones_like(base)
-    m = (gd==0)&(ga==0); t[m] = 1 - lam[m]*mu[m]*rho
-    m = (gd==0)&(ga==1); t[m] = 1 + lam[m]*rho
-    m = (gd==1)&(ga==0); t[m] = 1 + mu[m]*rho
-    m = (gd==1)&(ga==1); t[m] = 1 - rho
+    m = (gole_home == 0) & (gole_away == 0); t[m] = 1 - lam[m] * mu[m] * rho
+    m = (gole_home == 0) & (gole_away == 1); t[m] = 1 + lam[m] * rho
+    m = (gole_home == 1) & (gole_away == 0); t[m] = 1 + mu[m] * rho
+    m = (gole_home == 1) & (gole_away == 1); t[m] = 1 - rho
     return -np.sum(np.log(np.maximum(base*t, 1e-15)))
 RHO = minimize_scalar(_neg_ll, bounds=(-0.2, 0.2), method="bounded").x
 
