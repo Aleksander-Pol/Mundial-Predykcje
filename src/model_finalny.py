@@ -54,24 +54,35 @@ gole_away = np.array(gole_away).astype(int)
 
 # mostek Elo -> gole
 B, A = np.polyfit(np.concatenate([diffs, -diffs]), np.concatenate([gole_home, gole_away]), 1)
+"""
+Dopasowanie funkcji liniowej do rozrzuconych punktów na wykresie. Polyfit obsługuje nie tylko proste lecz
+n-wymiarowe wielomiany. Ostatni parametr właśnie wskazuje na stopień wielomianu
+"""
 
 # dopasowanie rho (Dixon-Coles)
-lam = np.maximum(A + B * diffs, 0.05)
-mu  = np.maximum(A - B * diffs, 0.05)
-base = poisson.pmf(gole_home, lam) * poisson.pmf(gole_away, mu)
+lam = np.maximum(A + B * diffs, 0.05) #tablica wszystkich lambd ze sportkań
+mu  = np.maximum(A - B * diffs, 0.05) #analogicznie
+base = poisson.pmf(gole_home, lam) * poisson.pmf(gole_away, mu) #tablica wzysztkich prawdopodobncych wyników na zakończenie spotkania zgodnie z tym jak naprawde było
+
+
 def _neg_ll(rho):
-    t = np.ones_like(base)
+    t = np.ones_like(base) # tworzy nową tablicę o takim samym kształcie jak tablica w parametrze
     m = (gole_home == 0) & (gole_away == 0); t[m] = 1 - lam[m] * mu[m] * rho
     m = (gole_home == 0) & (gole_away == 1); t[m] = 1 + lam[m] * rho
     m = (gole_home == 1) & (gole_away == 0); t[m] = 1 + mu[m] * rho
     m = (gole_home == 1) & (gole_away == 1); t[m] = 1 - rho
-    return -np.sum(np.log(np.maximum(base*t, 1e-15)))
-RHO = minimize_scalar(_neg_ll, bounds=(-0.2, 0.2), method="bounded").x
+    """
+    Dixon-Coles ze wzoru z neta
+    """
+
+    return -np.sum(np.log(np.maximum(base * t, 1e-15))) # dodawanie stabilniejsze niż iloczyn. działanie w log-space jest bezpieczniejsze
+
+RHO = minimize_scalar(_neg_ll, bounds=(-0.2, 0.2), method="bounded").x  # minimalizacja funkcji żeby znaleźć namniejsze RHO
 
 # lista drużyn do dropdownów (min. 30 meczów)
 def lista_druzyn(min_meczow=30):
-    licznik = pd.concat([df["home_team"], df["away_team"]]).value_counts()
-    return sorted(licznik[licznik >= min_meczow].index)
+    licznik = pd.concat([df["home_team"], df["away_team"]]).value_counts() #słownik z ilością wystąpień każdej z drużyn
+    return sorted(licznik[licznik >= min_meczow].index) #maska na odsiewanie drużyn które mają za mało spotkań żeby móc robić jakieś predykcje
 
 # predykcja
 def przewiduj_mecz(team_a, team_b, neutralne=True, max_goli=8):
@@ -80,11 +91,15 @@ def przewiduj_mecz(team_a, team_b, neutralne=True, max_goli=8):
     lam_, mu_ = max(A + B*diff, 0.05), max(A - B*diff, 0.05)
     m = np.outer(poisson.pmf(np.arange(max_goli+1), lam_),
                  poisson.pmf(np.arange(max_goli+1), mu_))
+
+
     m[0,0] *= 1 - lam_*mu_*RHO
     m[0,1] *= 1 + lam_*RHO
     m[1,0] *= 1 + mu_*RHO
     m[1,1] *= 1 - RHO
-    m /= m.sum()
+    m /= m.sum() # normalizacja
+
+
     p1, px, p2 = np.tril(m,-1).sum(), np.trace(m), np.triu(m,1).sum()
     i, j = np.unravel_index(m.argmax(), m.shape)
     return {"wynik": f"{i}:{j}", "wygrana_a": p1, "remis": px, "wygrana_b": p2}
