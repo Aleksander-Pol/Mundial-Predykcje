@@ -2,7 +2,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from src.model_finalny import przewiduj_mecz, lista_druzyn
 
-st.title("Predyktor meczów reprezentacji ⚽")
+st.title("Predyktor meczów reprezentacji")
 
 druzyny = lista_druzyn()
 
